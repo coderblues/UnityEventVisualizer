@@ -2,7 +2,6 @@
 using UnityEngine;
 using UnityEditor;
 using UnityEngine.EventSystems;
-using System.Reflection;
 using UnityEngine.Events;
 using System;
 using UnityEditor.Callbacks;
@@ -18,11 +17,13 @@ namespace EventVisualizer.Base
 			foreach (var type in ComponentsThatCanHaveUnityEvent)
 			{
 				if(type.IsGenericTypeDefinition)
-				{
+				{	
+					// skip the non-concrete types
 					continue;
 				}
 
-				HashSet<UnityEngine.Object> selectedComponents = new HashSet<UnityEngine.Object>();
+				// find all the unity objects in the decendents
+				HashSet<UnityEngine.Object> unityComponents = new HashSet<UnityEngine.Object>();
 				if(roots != null && roots.Length > 0)
 				{
 					foreach(var root in roots)
@@ -31,25 +32,25 @@ namespace EventVisualizer.Base
 						{
 							if(searchHierarchy)
 							{
-								selectedComponents.UnionWith(root.GetComponentsInChildren(type));
+								unityComponents.UnionWith(root.GetComponentsInChildren(type));
 							}
 							else
 							{
-								selectedComponents.Add(root.GetComponent(type));
+								unityComponents.Add(root.GetComponent(type));
 							}
 						}
 					}
 				}
 				else 
 				{
-					selectedComponents = new HashSet<UnityEngine.Object>(GameObject.FindObjectsOfType(type));
+					unityComponents = new HashSet<UnityEngine.Object>(GameObject.FindObjectsOfType(type));
 				}
 
-				foreach (UnityEngine.Object caller in selectedComponents)
-				{
+				foreach (UnityEngine.Object caller in unityComponents) {
 					Component comp = caller as Component;
-					if(comp != null)
-					{
+					if(comp != null) {
+						// find all the Event notifications originating
+						// from the unity Component
 						ExtractDefaultEventTriggers(calls, comp);
 						ExtractEvents(calls, comp);
 					}
@@ -72,7 +73,7 @@ namespace EventVisualizer.Base
 				SerializedProperty persistentCalls = iterator.FindPropertyRelative("m_PersistentCalls.m_Calls");
 				bool isUnityEvent = persistentCalls != null;
 				if (isUnityEvent && persistentCalls.arraySize > 0) {
-					UnityEventBase unityEvent = Puppy.EditorHelper.GetTargetObjectOfProperty(iterator) as UnityEventBase;
+					UnityEventBase unityEvent = SerializedPropertyHelper.GetTargetObjectOfProperty<UnityEventBase>(iterator);
 					AddEventCalls(calls, caller, unityEvent, iterator.displayName, iterator.propertyPath);
 				}
 				hasData = iterator.Next(!isUnityEvent);
@@ -112,68 +113,22 @@ namespace EventVisualizer.Base
 		public static bool NeedsGraphRefresh = false;
 		
 		private static HashSet<Type> ComponentsThatCanHaveUnityEvent = new HashSet<Type>();
-		private static Dictionary<Type, bool> TmpSearchedTypes = new Dictionary<Type, bool>();
 
 		[DidReloadScripts, InitializeOnLoadMethod]
 		static void RefreshTypesThatCanHoldUnityEvents() {
 			var sw = System.Diagnostics.Stopwatch.StartNew();
-			
-#if NET_4_6
-			var objects = AppDomain.CurrentDomain.GetAssemblies().Where(a => !a.IsDynamic)
-				.SelectMany(a => a.GetTypes())
-				.Where(t => typeof(Component).IsAssignableFrom(t));
-#else
-			var objects = AppDomain.CurrentDomain.GetAssemblies()
-				.SelectMany(a => a.GetTypes())
-				.Where(t => typeof(Component).IsAssignableFrom(t));
-#endif
 
-			foreach (var obj in objects) {
-				if (RecursivelySearchFields<UnityEventBase>(obj)) {
+			Dictionary<Type, bool> tmpSearchedTypes = new Dictionary<Type, bool>();
+			var types = TypesHelper.GetTypesMatching<Component>();
+			foreach (var obj in types) {
+				if (TypesHelper.RecursivelyFindFieldsOfType<UnityEventBase>(obj, tmpSearchedTypes)) {
 					ComponentsThatCanHaveUnityEvent.Add(obj);
 				}
 			}
-			TmpSearchedTypes.Clear();
+			// TmpSearchedTypes.Clear();
 			
 			Debug.Log("UnityEventVisualizer Updated Components that can have UnityEvents (" + ComponentsThatCanHaveUnityEvent.Count + "). Milliseconds: " + sw.Elapsed.TotalMilliseconds);
 		}
 
-		/// <summary>
-		/// Search for types that have a field or property of type <typeparamref name="T"/> or can hold an object that can.
-		/// </summary>
-		/// <typeparam name="T">Needle</typeparam>
-		/// <param name="type">Haystack</param>
-		/// <returns>Can contain some object <typeparamref name="T"/></returns>
-		static bool RecursivelySearchFields<T>(Type type) {
-			bool wanted;
-			if (TmpSearchedTypes.TryGetValue(type, out wanted)) return wanted;
-			TmpSearchedTypes.Add(type, false);
-			
-			const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
-			foreach (var fType in type.GetFields(flags).Where(f => !f.FieldType.IsPrimitive).Select(f => f.FieldType).Concat(type.GetProperties(flags).Select(p => p.PropertyType))) {
-				if (typeof(T).IsAssignableFrom(fType)) {
-					return TmpSearchedTypes[type] |= true;
-				}
-				else if (typeof(UnityEngine.Object).IsAssignableFrom(fType)) {
-					continue;
-				}
-				else if (!TmpSearchedTypes.TryGetValue(fType, out wanted)) {
-					if (RecursivelySearchFields<T>(fType)) {
-						return TmpSearchedTypes[type] |= true;
-					}
-				}
-				else if (wanted) {
-					return TmpSearchedTypes[type] |= true;
-				}
-			}
-
-			if (type.IsArray) {
-				if (RecursivelySearchFields<T>(type.GetElementType())) {
-					return TmpSearchedTypes[type] |= true;
-				}
-			}
-
-			return false;
-		}
 	}
 }
